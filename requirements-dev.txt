@@ -1,0 +1,23 @@
+# Extra tools for analysis and training, installed on top of
+# FutureNetwork-starting-kit/requirements.txt.
+# Install torch from https://download.pytorch.org/whl/cu126 (driver 535 on the T4s).
+
+# Numerics, signal processing and classical ML
+scipy
+pandas
+scikit-learn
+lightgbm
+
+# Plotting
+matplotlib
+seaborn
+
+# Training utilities
+tqdm
+einops
+tensorboard
+
+# Notebooks
+jupyterlab
+ipykernel
+ipywidgets
