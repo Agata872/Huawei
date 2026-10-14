@@ -21,3 +21,7 @@ tensorboard
 jupyterlab
 ipykernel
 ipywidgets
+
+# Converting LightGBM / sklearn models to ONNX (feature_model route)
+onnxmltools
+skl2onnx
