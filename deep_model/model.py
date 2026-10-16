@@ -29,18 +29,22 @@ def _std(x, dim):
 class InputFeatures(nn.Module):
     """(B, T, 3, 126, 2) pooled CSI -> (B, 9, T, K') map and (B, 1) log RMS."""
 
-    def __init__(self, freq_pool=2, rms_norm=True):
+    def __init__(self, freq_pool=2, rms_norm=True, amp_only=False):
         super().__init__()
         self.freq_pool = freq_pool
         self.rms_norm = rms_norm
+        self.amp_only = amp_only  # relative amplitude only: phase of other NICs (Intel 5300) is unreliable
 
     def forward(self, h):
         # Pooling is linear, so doing it first barely changes the result and
         # makes the per-frame normalisation `freq_pool` times cheaper.
         h = normalise_frames(pool_groups(h, self.freq_pool))  # (B, T, A, K', 2)
-        _, dyn, _ = split_static_dynamic(h)
         ramp = relative_amplitude(h)
-        x = torch.cat((dyn[..., 0], dyn[..., 1], ramp), dim=2)  # (B, T, 3A, K')
+        if self.amp_only:
+            x = ramp  # (B, T, A, K')
+        else:
+            _, dyn, _ = split_static_dynamic(h)
+            x = torch.cat((dyn[..., 0], dyn[..., 1], ramp), dim=2)  # (B, T, 3A, K')
         rms = torch.sqrt((x ** 2).mean(dim=(1, 2, 3)) + EPS)  # (B,)
         if self.rms_norm:
             x = x / rms[:, None, None, None]
@@ -60,15 +64,15 @@ class CSINet(nn.Module):
     """(B, T, 3, 126, 2) pooled CSI + (B, T) intervals -> (B, 5) logits."""
 
     def __init__(self, width=32, dropout=0.3, freq_pool=2, rms_norm=True,
-                 use_ati=True, use_scale=True):
+                 use_ati=True, use_scale=True, amp_only=False):
         super().__init__()
-        self.inputs = InputFeatures(freq_pool, rms_norm)
+        self.inputs = InputFeatures(freq_pool, rms_norm, amp_only)
         self.use_ati = use_ati
         self.use_scale = use_scale
         w = width
         # (T, K') = (600, 63) -> (150, 32) -> (75, 16) -> (38, 16) -> (19, 8) -> (10, 4)
         self.body = nn.Sequential(
-            conv_block(9, w, (7, 3), (4, 2)),
+            conv_block(3 if amp_only else 9, w, (7, 3), (4, 2)),
             conv_block(w, 2 * w, (5, 3), (2, 2)),
             conv_block(2 * w, 2 * w, (5, 3), (2, 1)),
             conv_block(2 * w, 4 * w, (5, 3), (2, 2)),

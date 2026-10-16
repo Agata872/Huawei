@@ -6,7 +6,8 @@
 
 Labeled traces are kept on the GPU; each step samples random 600-frame
 windows class-balanced over traces. Reported accuracy is from the last step
-(no early stopping on the held-out room).
+(no early stopping on the held-out room). LORO records keep each window's
+logits so calibration can be studied offline.
 """
 
 import argparse
@@ -22,11 +23,11 @@ from common.cv import eval_starts, save_run, summarize
 from common.data import RUNS_ROOT, WINDOW, load_traces
 from deep_model.model import CSINet
 
-MODEL_KEYS = ("width", "dropout", "freq_pool", "rms_norm", "use_ati", "use_scale")
+MODEL_KEYS = ("width", "dropout", "freq_pool", "rms_norm", "use_ati", "use_scale", "amp_only")
 
 
 def build_model(cfg):
-    return CSINet(**{k: cfg[k] for k in MODEL_KEYS})
+    return CSINet(**{k: cfg[k] for k in MODEL_KEYS if k in cfg})  # older checkpoints lack newer keys
 
 
 class GpuTraces:
@@ -66,10 +67,17 @@ def augment(h, ati, cfg):
     return h, ati
 
 
+def target(label, cfg):
+    """Training target: the headcount, or 0 / 1 / 2 (= two or more) with --coarse."""
+    return label.clamp(max=2) if cfg.get("coarse") else label
+
+
 def train_model(data, train_idx, cfg, device, monitor=None):
     """Train on the traces data.traces[train_idx]; `monitor(model, step)` is called periodically."""
     torch.manual_seed(cfg["seed"])
     model = build_model(cfg).to(device)
+    if cfg.get("init"):
+        model.load_state_dict(torch.load(cfg["init"], map_location=device)["state_dict"])
     opt = torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=cfg["lr"], total_steps=cfg["steps"],
                                                 pct_start=0.1)
@@ -78,7 +86,7 @@ def train_model(data, train_idx, cfg, device, monitor=None):
     scaler = torch.amp.GradScaler(enabled=use_amp)
 
     train_idx = torch.as_tensor(train_idx, device=device)
-    labels = data.labels[train_idx]
+    labels = target(data.labels[train_idx], cfg)
     counts = torch.bincount(labels, minlength=5).float()
     weights = 1.0 / counts[labels]  # every class equally likely per draw
     max_start = data.csi.shape[1] - WINDOW + 1
@@ -88,8 +96,9 @@ def train_model(data, train_idx, cfg, device, monitor=None):
         pick = train_idx[torch.multinomial(weights, cfg["batch"], replacement=True)]
         starts = torch.randint(0, max_start, (cfg["batch"],), device=device)
         h, ati = augment(*data.gather(pick, starts), cfg)
+        y = target(data.labels[pick], cfg)
         with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
-            loss = loss_fn(model(h, ati), data.labels[pick])
+            loss = loss_fn(model(h, ati), y)
         opt.zero_grad(set_to_none=True)
         scaler.scale(loss).backward()
         scaler.step(opt)
@@ -101,17 +110,18 @@ def train_model(data, train_idx, cfg, device, monitor=None):
 
 
 @torch.no_grad()
-def predict_windows(model, data, trace_ids, batch=128):
-    """Predictions for the non-overlapping windows of the given traces."""
+def predict_windows(model, data, trace_ids, batch=128, with_logits=False):
+    """(trace, pred[, logits]) for the non-overlapping windows of the given traces."""
     model.eval()
     jobs = [(i, s) for i in trace_ids for s in eval_starts(data.traces[i])]
-    preds = []
+    logits = []
     for k in range(0, len(jobs), batch):
         ids, starts = zip(*jobs[k:k + batch])
         dev = data.csi.device
         h, ati = data.gather(torch.tensor(ids, device=dev), torch.tensor(starts, device=dev))
-        preds += model(h, ati).argmax(dim=1).tolist()
-    return [(data.traces[i], p) for (i, _), p in zip(jobs, preds)]
+        logits += model(h, ati).float().tolist()
+    out = [(data.traces[i], int(np.argmax(z)), z) for (i, _), z in zip(jobs, logits)]
+    return out if with_logits else [o[:2] for o in out]
 
 
 def parse_args(argv=None):
@@ -119,7 +129,7 @@ def parse_args(argv=None):
 
 
 def build_parser(description=__doc__):
-    """Model, optimisation and augmentation options shared with deep_model.adapt."""
+    """Model, optimisation and augmentation options shared with deep_model.pretrain."""
     p = argparse.ArgumentParser(description=description,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--folds", default="all", help="'all' or comma-separated rooms")
@@ -142,9 +152,14 @@ def build_parser(description=__doc__):
     p.add_argument("--no-rms-norm", dest="rms_norm", action="store_false")
     p.add_argument("--no-ati", dest="use_ati", action="store_false")
     p.add_argument("--no-scale", dest="use_scale", action="store_false")
+    p.add_argument("--amp-only", action="store_true", help="Relative amplitude input only (no phase)")
+    p.add_argument("--init", default=None, help="Start from this checkpoint's weights (e.g. WiMANS pretraining)")
     p.add_argument("--aug-antenna", type=float, default=0.5)
     p.add_argument("--aug-freq-flip", type=float, default=0.5)
     p.add_argument("--aug-time-flip", type=float, default=0.5)
+    p.add_argument("--coarse", action="store_true",
+                   help="Train on 0 / 1 / 2+ people (2+ is output as class 2); 2-4 carry no "
+                        "transferable signal in the labeled rooms")
     return p
 
 
@@ -164,8 +179,8 @@ def run_folds(rooms, cfg, device):
 
         print(f"fold {room} on {device}: train {len(train)} traces, held-out {len(held)}", flush=True)
         model = train_model(data, train, cfg, device, monitor)
-        records += [dict(fold=room, ident=t.ident, label=t.label, pred=int(p))
-                    for t, p in predict_windows(model, data, held)]
+        records += [dict(fold=room, ident=t.ident, label=t.label, pred=p, logits=[round(v, 4) for v in z])
+                    for t, p, z in predict_windows(model, data, held, with_logits=True)]
         print(f"  [{room}] fold time {time.time() - start:.0f}s", flush=True)
     return records
 
