@@ -12,6 +12,9 @@ that never appear in the labeled data. See
 | `common/` | Shared code: data index and cache, ONNX-exportable preprocessing, leave-one-room-out (LORO) evaluation, ONNX export and checks |
 | `feature_model/` | Route A: hand-crafted, scale-invariant window features + LightGBM or logistic regression |
 | `deep_model/` | Route B: a compact CNN on the time × subcarrier dynamic CSI |
+| `temporal_model/` | Route C: the Reference P13 network (public 0.50), precomputed block maps and leave-one-room-out training from scratch |
+| `analysis/` | Per-room checks of how CSI features and P13 behave across headcounts and rooms (CPU only) |
+| `colab/` | Notebooks that run the GPU experiments on Google Colab |
 | `data/` | Downloaded data (`extracted/`) and caches (`cache/`); git-ignored |
 | `runs/` | LORO results (JSON), logs and checkpoints; git-ignored |
 | `submissions/` | Exported `.onnx` files; `*.onnx` is git-ignored |
@@ -66,6 +69,33 @@ python -m deep_model.export runs/deep_model/cnn_base.pt  # -> submissions/deep_c
 ```
 
 `python -m deep_model.train --help` lists the model and augmentation switches.
+
+## Route C: P13 temporal model
+
+`temporal_model/model.py` reproduces the Reference P13 network exactly (same
+logits, same parameter names); its checkpoints live in the untracked
+`Reference/` folder. P13 only sees block means over 10 frames × 8
+subcarriers, so `temporal_model.maps` stores those per trace (about 200 MB
+for the labeled split instead of 14 GB of raw CSI) and training runs on them.
+
+```bash
+python -m temporal_model.maps --check      # block maps, checked against the raw-input features
+python -m temporal_model.loro              # rooms / single recordings held out, 3 seeds (GPU)
+```
+
+On Colab, `colab/loro.ipynb` does all of this, including the data download.
+
+## Analyses
+
+```bash
+python -m analysis.headcount_separability   # do features order headcounts the same way in a1 and c1?
+python -m analysis.unlabeled_rooms          # P13 predictions and feature ranges in the unlabeled rooms
+```
+
+Both run on CPU and write to `runs/analysis/`. So far: no feature orders
+1–4 people the same way in a1 and c1, and features fitted in one of them
+transfer at chance; 0 vs 1 transfers moderately (AUC ≈ 0.7 across rooms).
+In the unlabeled rooms P13 rarely predicts 3 or 4 people.
 
 ## Using the unlabeled data
 
