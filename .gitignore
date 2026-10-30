@@ -18,3 +18,6 @@ __pycache__/
 checkpoints/
 runs/
 outputs/
+
+# Reference model package (P13 code, logs, checkpoints); kept local only
+Reference/
