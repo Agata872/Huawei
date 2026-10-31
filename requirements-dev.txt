@@ -9,6 +9,11 @@ scikit-learn
 lightgbm
 hmmlearn
 
+# Streaming the EHUNAM archive (temporal_model.ehunam)
+remotezip
+inflate64
+openpyxl
+
 # Plotting
 matplotlib
 seaborn

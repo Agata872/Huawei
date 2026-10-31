@@ -14,9 +14,17 @@ Windows come from the block maps (temporal_model.maps), so starts are multiples
 of 10 frames rather than any frame.
 
     python -m temporal_model.train --p11b <P11B checkpoint.pt> --seeds 1,2,3,4,5
+    python -m temporal_model.train ... --exclude-rooms a1 --name p13_noa1
+    python -m temporal_model.train ... --exclude-rooms a1 --ehunam-share 0.5 --name p13_noa1_ehunam
 
-Meant for a GPU (colab/train_p13.ipynb), about a minute per seed. Writes
-runs/temporal_model/p13_seed<k>.pt with the EMA weights under "state_dict".
+--exclude-rooms leaves the traces of those rooms out of training.
+--ehunam-share mixes in the EHUNAM captures (temporal_model.ehunam): after the
+class is drawn, a window comes from them with this probability (always when
+the competition rooms left have no trace of that class).
+
+Meant for a GPU (colab/train_p13.ipynb, colab/train_ehunam.ipynb), about a
+minute per seed. Writes runs/temporal_model/<name>_seed<k>.pt with the EMA
+weights under "state_dict".
 """
 
 import argparse
@@ -36,11 +44,32 @@ from temporal_model.model import P11B_CHECKPOINT, TemporalNet, load_encoder
 OUT = RUNS_ROOT / "temporal_model"
 
 
-def train(bank, encoder_path, seed, device, steps=1600, batch=8, warmup=200):
+def sample_windows(banks, pools, external_share, rng, batch, device):
+    """Class-uniform -> source (competition or external) -> trace-uniform -> start-uniform windows."""
+    y = rng.integers(NUM_CLASSES, size=batch)
+    source = np.zeros(batch, int)
+    if external_share > 0:
+        source = ((rng.random(batch) < external_share) | np.array([len(pools[0][c]) == 0 for c in y])).astype(int)
+    traces = [int(rng.choice(pools[s][c])) for s, c in zip(source, y)]
+    blocks = rng.integers(0, np.array([banks[s].max_block for s in source]) + 1)
+    parts, order = [], []
+    for s in np.unique(source):
+        m = np.flatnonzero(source == s)
+        parts.append(banks[s].windows([traces[i] for i in m], blocks[m], device))
+        order.append(m)
+    a, ph, ati = (torch.cat([p[k] for p in parts]) for k in range(3))
+    y = torch.as_tensor(y[np.concatenate(order)], dtype=torch.long, device=device)
+    return a, ph, ati, y
+
+
+def train(banks, keep, encoder_path, seed, device, steps=1600, batch=8, warmup=200, external_share=0.0):
+    """banks: the labeled bank, then optionally the EHUNAM bank; keep: per bank, a mask of usable traces."""
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
-    labels = np.array([r["label"] for r in bank.rows])
-    by_class = {c: np.flatnonzero(labels == c) for c in range(NUM_CLASSES)}
+    pools = []
+    for bank, k in zip(banks, keep):
+        labels = np.array([r["label"] for r in bank.rows])
+        pools.append({c: np.flatnonzero((labels == c) & k) for c in range(NUM_CLASSES)})
     model = load_encoder(TemporalNet(), encoder_path).to(device)
     ema = copy.deepcopy(model).eval().requires_grad_(False)
     model.encoder.requires_grad_(False)
@@ -50,11 +79,7 @@ def train(bank, encoder_path, seed, device, steps=1600, batch=8, warmup=200):
     for step in range(1, steps + 1):
         if step == warmup + 1:
             model.encoder.requires_grad_(True)
-        y = rng.integers(NUM_CLASSES, size=batch)
-        traces = [int(rng.choice(by_class[c])) for c in y]
-        blocks = rng.integers(0, bank.max_block + 1, size=batch)
-        a, ph, ati = bank.windows(traces, blocks, device)
-        y = torch.as_tensor(y, dtype=torch.long, device=device)
+        a, ph, ati, y = sample_windows(banks, pools, external_share, rng, batch, device)
         model.train()
         clean = forward(model, a, ph, ati)
         augmented = forward(model, a + attenuation_shift(rng, batch).to(device), ph, ati)
@@ -78,14 +103,27 @@ def main():
     parser.add_argument("--seeds", default="1,2,3,4,5")
     parser.add_argument("--steps", type=int, default=1600)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--exclude-rooms", default="", help="comma-separated labeled rooms left out, e.g. a1")
+    parser.add_argument("--ehunam-share", type=float, default=0.0, help="share of windows from EHUNAM captures")
+    parser.add_argument("--name", default="p13", help="checkpoint name prefix")
     args = parser.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
-    bank = MapBank("labeled")
+    excluded = [r for r in args.exclude_rooms.split(",") if r]
+    banks = [MapBank("labeled")]
+    keep = [np.array([r["room"] not in excluded for r in banks[0].rows])]
+    if args.ehunam_share > 0:
+        from temporal_model.ehunam import SPLIT, read_ehunam_index  # needs the download extras
+        banks.append(MapBank(SPLIT, read_ehunam_index()))
+        keep.append(np.ones(len(banks[1].rows), bool))
+    for bank, k in zip(banks, keep):
+        labels = np.array([r["label"] for r in bank.rows])[k]
+        print(f"{bank.rows[0]['split']}: {k.sum()} traces, per class {np.bincount(labels, minlength=NUM_CLASSES).tolist()}")
     for seed in [int(s) for s in args.seeds.split(",")]:
         print(f"seed {seed}", flush=True)
-        ema = train(bank, args.p11b, seed, args.device, args.steps)
-        path = OUT / f"p13_seed{seed}.pt"
-        torch.save({"state_dict": ema.state_dict(), "config": dict(seed=seed, steps=args.steps)}, path)
+        ema = train(banks, keep, args.p11b, seed, args.device, args.steps, external_share=args.ehunam_share)
+        path = OUT / f"{args.name}_seed{seed}.pt"
+        config = dict(seed=seed, steps=args.steps, exclude_rooms=excluded, ehunam_share=args.ehunam_share)
+        torch.save({"state_dict": ema.state_dict(), "config": config}, path)
         print(f"  wrote {path}", flush=True)
 
 

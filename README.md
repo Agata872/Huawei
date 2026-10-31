@@ -83,10 +83,23 @@ python -m temporal_model.maps --check      # block maps, checked against the raw
 python -m temporal_model.loro              # rooms / single recordings held out, 3 seeds (GPU)
 python -m temporal_model.train --p11b <P11B checkpoint.pt> --seeds 1,2,3,4,5   # P13 recipe, new seeds (GPU)
 python -m temporal_model.export --checkpoint <P13> runs/temporal_model/p13_seed*.pt   # ensemble -> submissions/
+python -m temporal_model.ehunam                                       # external captures -> block maps (~25 GB streamed)
+python -m temporal_model.train ... --exclude-rooms a1 --ehunam-share 0.5 --name p13_noa1_ehunam
 ```
 
-On Colab, `colab/loro.ipynb` and `colab/train_p13.ipynb` do this, including
-the data download; the latter needs the P11B checkpoint uploaded by hand.
+On Colab, `colab/loro.ipynb`, `colab/train_p13.ipynb` and
+`colab/train_ehunam.ipynb` do this, including the data download; the last two
+need the P11B checkpoint uploaded by hand.
+
+External data: [EHUNAM](https://doi.org/10.1038/s41597-025-06238-4) (de Armas
+et al., Scientific Data 2025, CC BY 4.0) has 802.11ac CSI over 80 MHz from
+Raspberry Pi monitors in six rooms with 0–4 people (179 usable captures of
+60 s). `temporal_model.ehunam` turns each capture recorded by receivers 1–3
+into a 3-antenna trace on the competition grid: competition frame timing,
+per-frame strongest-path phase referencing (Nexmon phase is random between
+frames), the k ≥ −64 sign flip of that hardware undone, the level of the
+labeled rooms, and the time-varying part shrunk 10–25x to the size it has in
+the competition data.
 
 Public leaderboard probes of P13 (0.50), which need no labels:
 

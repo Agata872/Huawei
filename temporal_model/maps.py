@@ -57,8 +57,8 @@ def build(split):
 class MapBank:
     """Every trace's maps of one split in memory, with window access at block granularity."""
 
-    def __init__(self, split):
-        self.rows = read_index(split)
+    def __init__(self, split, rows=None):
+        self.rows = read_index(split) if rows is None else rows
         maps = [np.load(map_path(split, r["identifier"])) for r in self.rows]
         self.a = torch.from_numpy(np.stack([m["a"] for m in maps]))  # (N, 1200, 3, 128)
         self.ph = torch.from_numpy(np.stack([m["ph"] for m in maps]))  # (N, 1200, 4, 128)
