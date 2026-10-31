@@ -113,6 +113,7 @@ python -m analysis.headcount_separability   # do features order headcounts the s
 python -m analysis.unlabeled_rooms          # P13 predictions and feature ranges in the unlabeled rooms
 python -m analysis.synthetic_check          # do windows built by adding one-person dynamics look like real crowds?
 python -m analysis.sharp_doppler            # the same question for SHARP-style Doppler traces
+python -m analysis.motion_states            # and for motion states found by K-means, then an HMM, on every room
 ```
 
 All run on CPU and write to `runs/analysis/`. So far: no feature orders
@@ -123,6 +124,11 @@ the motion power and the Doppler profile are the same for 1–4 people, while in
 a1 the motion power below 10 Hz falls by ~20 dB from 1 to 4 people (the
 normalised profile then looks wider only because the noise floor shows). SHARP's per-antenna phase sanitization has little to remove here,
 since the raw CSI phase moves by only ~0.002 rad between frames.
+Motion states found without labels on every room (`analysis.motion_states`:
+K-means on 50 ms blocks, then an HMM) are shared by all rooms and readable as
+noise, bursts, slow and one-sided motion, but none of their window shares or
+switching rates orders 1–4 people the same way in a1 and c1, and with g1 held
+out they separate 0 from 1 person no better than the existing features (0.68).
 In the unlabeled rooms P13 rarely predicts 3 or 4 people. Synthetic
 multi-person windows (`temporal_model.synthesis`) do not look like real ones
 to P13 or to a feature classifier: in real recordings people move less when
