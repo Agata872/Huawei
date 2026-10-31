@@ -112,11 +112,16 @@ all match u1.
 python -m analysis.headcount_separability   # do features order headcounts the same way in a1 and c1?
 python -m analysis.unlabeled_rooms          # P13 predictions and feature ranges in the unlabeled rooms
 python -m analysis.synthetic_check          # do windows built by adding one-person dynamics look like real crowds?
+python -m analysis.sharp_doppler            # the same question for SHARP-style Doppler traces
 ```
 
-Both run on CPU and write to `runs/analysis/`. So far: no feature orders
+All run on CPU and write to `runs/analysis/`. So far: no feature orders
 1–4 people the same way in a1 and c1, and features fitted in one of them
 transfer at chance; 0 vs 1 transfers moderately (AUC ≈ 0.7 across rooms).
+Doppler traces as in SHARP (Meneghello et al., TMC 2023) do no better: in c1
+the Doppler profile is the same for 1–4 people, while in a1 it widens with
+headcount. SHARP's per-antenna phase sanitization has little to remove here,
+since the raw CSI phase moves by only ~0.002 rad between frames.
 In the unlabeled rooms P13 rarely predicts 3 or 4 people. Synthetic
 multi-person windows (`temporal_model.synthesis`) do not look like real ones
 to P13 or to a feature classifier: in real recordings people move less when

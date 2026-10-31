@@ -232,9 +232,9 @@ def style(ax):
     ax.tick_params(colors=INK_2, labelsize=8, width=0.6)
 
 
-def plot_distributions(d, t, rows, path, top=9):
+def plot_distributions(d, t, rows, path, top=9, controls=CONTROLS):
     chosen = [r["feature"] for r in rows[:top]]
-    chosen += [c for c in CONTROLS if c not in chosen]
+    chosen += [c for c in controls if c not in chosen]
     names = list(d["names"])
     by_name = {r["feature"]: r for r in rows}
     ncol = 4
