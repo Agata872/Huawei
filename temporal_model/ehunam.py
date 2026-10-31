@@ -35,6 +35,7 @@ labeled maps (python -m temporal_model.maps) for the ATI sequences.
 import argparse
 import csv
 import io
+import os
 import struct
 import threading
 import urllib.request
@@ -80,19 +81,37 @@ def select(summary):
     return rows
 
 
-def fetch(name):
-    """One archive member -> bytes, by range requests (the archive uses Deflate64)."""
-    if not hasattr(_local, "zip"):
-        _local.zip = RemoteZip(ARCHIVE)
-    z = _local.zip
-    info = z.getinfo(name)
-    z.fp.seek(info.header_offset)
-    n, e = struct.unpack("<HH", z.fp.read(30)[26:30])
-    z.fp.seek(info.header_offset + 30 + n + e)
-    data = inflate64.Inflater().inflate(z.fp.read(info.compress_size))
-    if len(data) != info.file_size or zlib.crc32(data) != info.CRC:
-        raise IOError(f"{name}: corrupt download")
-    return data
+class TooShort(ValueError):
+    """A receiver file that ends before the last frame time."""
+
+
+def fetch(name, attempts=3):
+    """One archive member -> bytes, by range requests (the archive uses Deflate64); retried on network errors."""
+    for attempt in range(attempts):
+        try:
+            if not hasattr(_local, "zip"):
+                _local.zip = RemoteZip(ARCHIVE)
+            z = _local.zip
+            info = z.getinfo(name)
+            z.fp.seek(info.header_offset)
+            n, e = struct.unpack("<HH", z.fp.read(30)[26:30])
+            z.fp.seek(info.header_offset + 30 + n + e)
+            data = inflate64.Inflater().inflate(z.fp.read(info.compress_size))
+            if len(data) != info.file_size or zlib.crc32(data) != info.CRC:
+                raise IOError(f"{name}: corrupt download")
+            return data
+        except OSError:  # includes requests' errors
+            _local.__dict__.pop("zip", None)
+            if attempt == attempts - 1:
+                raise
+
+
+def packet_times(ts):
+    """Receiver timestamps (s) -> packet times with the few steps <= 0 or > 1 s replaced by the median step."""
+    dt = np.diff(ts.astype(np.float64))
+    bad = (dt <= 0) | (dt > 1.0)
+    dt[bad] = np.median(dt[~bad])
+    return np.concatenate([[0.0], np.cumsum(dt)])
 
 
 def strongest_path_reference(h):
@@ -111,11 +130,7 @@ def strongest_path_reference(h):
 
 def receiver(mat, times):
     """One receiver file + frame times (s) -> (FRAMES, 1024) complex64 on the competition subcarrier grid."""
-    ts = mat["TimeStamp"][:, 0].astype(np.float64)
-    dt = np.diff(ts)
-    bad = (dt <= 0) | (dt > 1.0)
-    dt[bad] = np.median(dt[~bad])
-    t = np.concatenate([[0.0], np.cumsum(dt)])
+    t = packet_times(mat["TimeStamp"][:, 0])
     i = np.clip(np.searchsorted(t, times), 1, len(t) - 1)
     i -= (times - t[i - 1]) < (t[i] - times)  # nearest packet
     h = mat["CSI"][i, VALID].astype(np.complex64)
@@ -145,8 +160,8 @@ def convert(row, ati_bank, rng):
     antennas = []
     for name in row["files"]:
         mat = scipy.io.loadmat(io.BytesIO(fetch(name)), variable_names=["CSI", "TimeStamp"])
-        if mat["TimeStamp"].shape[0] < 2 or times[-1] > np.sum(np.clip(np.diff(mat["TimeStamp"][:, 0]), 0, 1.0)):
-            raise ValueError(f"{name}: shorter than {times[-1]:.1f} s")
+        if len(mat["TimeStamp"]) < 2 or packet_times(mat["TimeStamp"][:, 0])[-1] < times[-1]:
+            raise TooShort(f"{name} ends before {times[-1]:.1f} s")
         h = receiver(mat, times)
         gain = 10 ** ((level + rng.uniform(-RECEIVER_DB, RECEIVER_DB)) / 20) / np.abs(h[:, 6:1019]).mean()
         static = h.mean(axis=0)
@@ -184,13 +199,21 @@ def main():
     def work(k):
         row = rows[k]
         path = map_path(SPLIT, row["identifier"])
+        tag = f"  [{k + 1}/{len(rows)}] {row['identifier']} ({row['room']}, {row['label']})"
         if not path.exists():
-            a, ph, ati = convert(row, ati_bank, np.random.default_rng(zlib.crc32(row["identifier"].encode())))
-            np.savez(path, a=a, ph=ph, ati=ati)
-        print(f"  [{k + 1}/{len(rows)}] {row['identifier']} ({row['room']}, {row['label']})", flush=True)
+            try:
+                a, ph, ati = convert(row, ati_bank, np.random.default_rng(zlib.crc32(row["identifier"].encode())))
+            except TooShort as error:
+                print(f"{tag} skipped: {error}", flush=True)
+                return
+            part = path.with_name(path.stem + ".part.npz")
+            np.savez(part, a=a, ph=ph, ati=ati)
+            os.replace(part, path)  # a crash never leaves a truncated map behind
+        print(tag, flush=True)
 
     with ThreadPoolExecutor(args.workers) as pool:
         list(pool.map(work, range(len(rows))))
+    rows = [r for r in rows if map_path(SPLIT, r["identifier"]).exists()]
     with (out / "index.csv").open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["identifier", "layout", "room", "acquisition", "headcount"])
