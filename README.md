@@ -96,6 +96,11 @@ Public leaderboard probes of P13 (0.50), which need no labels:
 | per-room calibration, 0/1/crowd or all 5 classes (`temporal_model.calibrate`) | 0.50 / 0.50 | no effect |
 | windows matched to any unlabeled room set to 0 (`calibrate --probe 0`) | 0.41 | part of the public set comes from unlabeled rooms |
 | windows matched to v1 set to 0 (`--probe 0 --probe-rooms v1`) | 0.49 | hardly any of it from v1 |
+| P13 recipe with 5 new seeds, mean logits (`temporal_model.train`, `export`) | 0.46 | P13 is on the lucky side of the seed spread |
+| the same 5 seeds + P13 | 0.47 | ensembling does not help on public |
+
+A new seed agrees with P13 on about 90% of the unlabeled windows
+(`analysis.seed_agreement`), and the 6-model ensemble on 93%.
 
 Room matching works on recordings left out of the fingerprint bank (h1, i1,
 u1, d1, j1: 100% of windows; v1: 89%); the five `unknown` unlabeled traces
