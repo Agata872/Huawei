@@ -119,8 +119,9 @@ All run on CPU and write to `runs/analysis/`. So far: no feature orders
 1–4 people the same way in a1 and c1, and features fitted in one of them
 transfer at chance; 0 vs 1 transfers moderately (AUC ≈ 0.7 across rooms).
 Doppler traces as in SHARP (Meneghello et al., TMC 2023) do no better: in c1
-the Doppler profile is the same for 1–4 people, while in a1 it widens with
-headcount. SHARP's per-antenna phase sanitization has little to remove here,
+the motion power and the Doppler profile are the same for 1–4 people, while in
+a1 the motion power below 10 Hz falls by ~20 dB from 1 to 4 people (the
+normalised profile then looks wider only because the noise floor shows). SHARP's per-antenna phase sanitization has little to remove here,
 since the raw CSI phase moves by only ~0.002 rad between frames.
 In the unlabeled rooms P13 rarely predicts 3 or 4 people. Synthetic
 multi-person windows (`temporal_model.synthesis`) do not look like real ones
