@@ -12,7 +12,7 @@ that never appear in the labeled data. See
 | `common/` | Shared code: data index and cache, ONNX-exportable preprocessing, leave-one-room-out (LORO) evaluation, ONNX export and checks |
 | `feature_model/` | Route A: hand-crafted, scale-invariant window features + LightGBM or logistic regression |
 | `deep_model/` | Route B: a compact CNN on the time × subcarrier dynamic CSI |
-| `temporal_model/` | Route C: the Reference P13 network (public 0.50), precomputed block maps and leave-one-room-out training from scratch |
+| `temporal_model/` | Route C: the Reference P13 network (public 0.50), precomputed block maps, leave-one-room-out training, multi-seed retraining, ensembles, per-room calibration and leaderboard probes |
 | `analysis/` | Per-room checks of how CSI features and P13 behave across headcounts and rooms (CPU only) |
 | `colab/` | Notebooks that run the GPU experiments on Google Colab |
 | `data/` | Downloaded data (`extracted/`) and caches (`cache/`); git-ignored |
@@ -81,27 +81,48 @@ for the labeled split instead of 14 GB of raw CSI) and training runs on them.
 ```bash
 python -m temporal_model.maps --check      # block maps, checked against the raw-input features
 python -m temporal_model.loro              # rooms / single recordings held out, 3 seeds (GPU)
+python -m temporal_model.train --p11b <P11B checkpoint.pt> --seeds 1,2,3,4,5   # P13 recipe, new seeds (GPU)
+python -m temporal_model.export --checkpoint <P13> runs/temporal_model/p13_seed*.pt   # ensemble -> submissions/
 ```
 
-On Colab, `colab/loro.ipynb` does all of this, including the data download.
+On Colab, `colab/loro.ipynb` and `colab/train_p13.ipynb` do this, including
+the data download; the latter needs the P11B checkpoint uploaded by hand.
+
+Public leaderboard probes of P13 (0.50), which need no labels:
+
+| Submission | Public | Reading |
+| --- | --- | --- |
+| P13 with predicted 2/3/4 merged into 2 / 3 / 4 (`export --merge-to`) | 0.37 / 0.41 / 0.42 | the 2–4 split is informative on the public rooms; true 2-person windows are the least often called a crowd |
+| per-room calibration, 0/1/crowd or all 5 classes (`temporal_model.calibrate`) | 0.50 / 0.50 | no effect |
+| windows matched to any unlabeled room set to 0 (`calibrate --probe 0`) | 0.41 | part of the public set comes from unlabeled rooms |
+| windows matched to v1 set to 0 (`--probe 0 --probe-rooms v1`) | 0.49 | hardly any of it from v1 |
+
+Room matching works on recordings left out of the fingerprint bank (h1, i1,
+u1, d1, j1: 100% of windows; v1: 89%); the five `unknown` unlabeled traces
+all match u1.
 
 ## Analyses
 
 ```bash
 python -m analysis.headcount_separability   # do features order headcounts the same way in a1 and c1?
 python -m analysis.unlabeled_rooms          # P13 predictions and feature ranges in the unlabeled rooms
+python -m analysis.synthetic_check          # do windows built by adding one-person dynamics look like real crowds?
 ```
 
 Both run on CPU and write to `runs/analysis/`. So far: no feature orders
 1–4 people the same way in a1 and c1, and features fitted in one of them
 transfer at chance; 0 vs 1 transfers moderately (AUC ≈ 0.7 across rooms).
-In the unlabeled rooms P13 rarely predicts 3 or 4 people.
+In the unlabeled rooms P13 rarely predicts 3 or 4 people. Synthetic
+multi-person windows (`temporal_model.synthesis`) do not look like real ones
+to P13 or to a feature classifier: in real recordings people move less when
+more of them are present, which adding one-person dynamics cannot reproduce.
 
 ## Using the unlabeled data
 
 The public test set is exactly class-balanced (constant predictions score
-0.20 for every class), and its rooms appear in the unlabeled data: per-room
-calibration moved the public score of the same CNN from 0.32 to 0.34.
+0.20 for every class), and some of its rooms appear in the unlabeled data:
+per-room calibration moved the public score of the same CNN from 0.32 to 0.34
+(for P13 it changed nothing, see Route C).
 `common.calibrate` fits, for each unlabeled room with enough traces, a logit
 bias that makes the model predict every headcount 20% of the time; inside the
 ONNX graph a window's room is recognised from its static-channel fingerprint.

@@ -53,12 +53,15 @@ class RoomCalibration(nn.Module):
         self.register_buffer("bank_room", torch.as_tensor(bank_room, dtype=torch.long))  # (N,)
         self.register_buffer("biases", torch.as_tensor(biases, dtype=torch.float32))    # (R, 5)
 
-    def forward(self, h, ati):
-        logits = self.core(h, ati)
+    def room_bias(self, h):
+        """(B, T, A, K, 2) pooled CSI -> (B, 5) bias of the matched room (zero when no room matches)."""
         sim = fingerprint(h) @ self.bank.T
         best, idx = sim.max(dim=1)
         bias = self.biases[self.bank_room[idx]]
-        return logits + torch.where((best >= self.min_similarity)[:, None], bias, torch.zeros_like(bias))
+        return torch.where((best >= self.min_similarity)[:, None], bias, torch.zeros_like(bias))
+
+    def forward(self, h, ati):
+        return self.core(h, ati) + self.room_bias(h)
 
 
 def fit_bias(logits, target, iters=300):
@@ -74,6 +77,25 @@ def fit_bias(logits, target, iters=300):
         p /= p.sum(axis=1, keepdims=True)
         b[live] += np.log(target[live]) - np.log(p[:, live].mean(axis=0) + 1e-12)
         b[live] -= b[live].mean()
+    return b
+
+
+def fit_group_bias(logits, groups, target, iters=300):
+    """Bias shared by the classes of each group so that the mean softmax mass of group g is target[g].
+
+    Classes in one group keep their relative logits: groups [[0], [1], [2, 3, 4]]
+    calibrate 0 / 1 / crowd and leave the network's split of the crowd alone.
+    """
+    logits = np.asarray(logits, dtype=np.float64)
+    b = np.zeros(logits.shape[1])
+    for _ in range(iters):
+        z = logits + b
+        z = z - z.max(axis=1, keepdims=True)
+        p = np.exp(z)
+        p /= p.sum(axis=1, keepdims=True)
+        for g, t in zip(groups, target):
+            b[g] += np.log(t) - np.log(p[:, g].sum(axis=1).mean() + 1e-12)
+        b -= b.mean()
     return b
 
 
